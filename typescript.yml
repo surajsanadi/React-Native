@@ -1,0 +1,223 @@
+trigger: none
+pr: none
+
+jobs:
+
+- job: BuildTypeScriptMessaging
+  timeoutInMinutes: 120
+  pool:
+    vmImage: 'ubuntu-latest'
+  steps:
+
+  - script: |
+      echo "=== Disk space before cleanup ==="
+      df -h /
+      sudo rm -rf /usr/share/dotnet
+      sudo rm -rf /usr/share/swift
+      sudo rm -rf /usr/local/lib/android/sdk/build-tools
+      sudo rm -rf /usr/local/lib/android/sdk/platforms
+      sudo rm -rf /usr/local/lib/android/sdk/system-images
+      sudo rm -rf /usr/local/lib/android/sdk/emulator
+      sudo rm -rf /opt/ghc
+      sudo rm -rf /opt/hostedtoolcache/CodeQL
+      sudo rm -rf /opt/hostedtoolcache/Ruby
+      sudo rm -rf /opt/hostedtoolcache/PyPy
+      sudo rm -rf /opt/hostedtoolcache/Python
+      sudo rm -rf /usr/local/share/boost
+      sudo rm -rf "$AGENT_TOOLSDIRECTORY/Java_Temurin-Hotspot_jdk"
+      sudo apt-get clean
+      docker system prune -af 2>/dev/null || true
+      echo "=== Disk space after cleanup ==="
+      df -h /
+    displayName: Free up disk space
+
+  - task: NodeTool@0
+    inputs:
+      versionSpec: '22.x'
+    displayName: Install Node.js
+
+  - script: npm install -g yarn
+    displayName: Install Yarn
+
+  - task: Cache@2
+    inputs:
+      key: 'yarn | "$(Agent.OS)" | yarn.lock'
+      restoreKeys: 'yarn | "$(Agent.OS)"'
+      path: '$(Build.SourcesDirectory)/node_modules'
+    displayName: Cache root node_modules
+
+  - task: Cache@2
+    inputs:
+      key: 'yarn-tsm | "$(Agent.OS)" | examples/TypeScriptMessaging/yarn.lock'
+      restoreKeys: 'yarn-tsm | "$(Agent.OS)"'
+      path: '$(Build.SourcesDirectory)/examples/TypeScriptMessaging/node_modules'
+    displayName: Cache TypeScriptMessaging node_modules
+
+  - task: Cache@2
+    inputs:
+      key: 'gradle-tsm | "$(Agent.OS)" | examples/TypeScriptMessaging/android/app/build.gradle'
+      restoreKeys: 'gradle-tsm | "$(Agent.OS)"'
+      path: '$(HOME)/.gradle'
+    displayName: Cache Gradle (TypeScriptMessaging)
+
+  - script: |
+      yarn install --ignore-engines --network-timeout 300000 || true
+    workingDirectory: '$(Build.SourcesDirectory)'
+    displayName: Install dependencies (root)
+
+  - script: |
+      mkdir -p package/native-package/node_modules
+      rm -f package/native-package/node_modules/mime
+      cp -r node_modules/mime package/native-package/node_modules/mime 2>/dev/null || true
+    workingDirectory: '$(Build.SourcesDirectory)'
+    displayName: Fix mime symlink
+
+  - script: yarn install --ignore-engines --network-timeout 300000
+    workingDirectory: '$(Build.SourcesDirectory)/examples/TypeScriptMessaging'
+    displayName: Install dependencies (TypeScriptMessaging)
+
+  - script: |
+      echo "=== Installing all peer dependencies ==="
+      yarn add \
+        react-native-teleport \
+        @shopify/flash-list \
+        @react-native-camera-roll/camera-roll \
+        @stream-io/flat-list-mvcp \
+        react-native-nitro-modules \
+        react-native-nitro-sound \
+        react-native-fast-image \
+        react-native-compressor \
+        react-native-keyboard-controller \
+        emoji-mart \
+        @emoji-mart/data \
+        --ignore-engines --network-timeout 300000 2>/dev/null || true
+      echo "=== Verifying installations ==="
+      for pkg in \
+        react-native-teleport \
+        @shopify/flash-list \
+        @react-native-camera-roll/camera-roll \
+        @stream-io/flat-list-mvcp \
+        react-native-nitro-modules \
+        react-native-nitro-sound \
+        react-native-keyboard-controller \
+        emoji-mart \
+        @emoji-mart/data; do
+        ls node_modules/$pkg > /dev/null 2>&1 && echo "$pkg OK" || echo "$pkg NOT FOUND"
+      done
+    workingDirectory: '$(Build.SourcesDirectory)/examples/TypeScriptMessaging'
+    displayName: Install all peer dependencies
+
+  - script: |
+      BASE_SRC="$(Build.SourcesDirectory)/package/native-package/android/src/main/java/com/streamchatreactnative"
+      BASE_DEST="$(Build.SourcesDirectory)/examples/TypeScriptMessaging/node_modules/stream-chat-react-native/android/src/main/java/com/streamchatreactnative"
+      mkdir -p "$BASE_DEST/shared"
+      cp -r "$BASE_SRC/shared/." "$BASE_DEST/shared/"
+      cp "$BASE_SRC/StreamShimmerViewManager.kt" "$BASE_DEST/StreamShimmerViewManager.kt"
+      echo "=== Result ==="
+      ls -la "$BASE_DEST/"
+      ls -la "$BASE_DEST/shared/"
+    displayName: Copy shared native sources (TypeScriptMessaging)
+
+  - script: |
+      echo "=== Installing NDK 26.1.10909125 ==="
+      $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.1.10909125"
+      echo "=== CMake 3.31.5 version test ==="
+      $ANDROID_SDK_ROOT/cmake/3.31.5/bin/cmake --version
+      echo "=== Writing local.properties ==="
+      echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+      echo "cmake.dir=$ANDROID_SDK_ROOT/cmake/3.31.5" >> local.properties
+      cat local.properties
+    workingDirectory: '$(Build.SourcesDirectory)/examples/TypeScriptMessaging/android'
+    displayName: Install NDK 26 and configure CMake 3.31.5
+
+  - script: |
+      python3 -c "
+      import re
+      content = open('app/build.gradle').read()
+      content = re.sub(r'\s*externalNativeBuild \{\s*cmake \{\s*version [^\}]*\}\s*\}', '', content)
+      patched = content.replace(
+          'ndkVersion rootProject.ext.ndkVersion',
+          'ndkVersion \"26.1.10909125\"'
+      )
+      open('app/build.gradle', 'w').write(patched)
+      print('Patched:')
+      idx = patched.find('android {')
+      print(patched[idx:idx+300])
+      "
+    workingDirectory: '$(Build.SourcesDirectory)/examples/TypeScriptMessaging/android'
+    displayName: Patch NDK version in app/build.gradle
+
+  - script: |
+      python3 -c "
+      content = open('app/src/main/AndroidManifest.xml').read()
+      patched = content.replace(
+          'xmlns:android=\"http://schemas.android.com/apk/res/android\"',
+          'xmlns:android=\"http://schemas.android.com/apk/res/android\"\n    xmlns:tools=\"http://schemas.android.com/tools\"'
+      )
+      patched = patched.replace(
+          'android:allowBackup=\"false\"',
+          'android:allowBackup=\"false\"\n        tools:replace=\"android:allowBackup\"'
+      )
+      open('app/src/main/AndroidManifest.xml', 'w').write(patched)
+      print('Patched AndroidManifest.xml:')
+      print(patched[:600])
+      "
+    workingDirectory: '$(Build.SourcesDirectory)/examples/TypeScriptMessaging/android'
+    displayName: Fix AndroidManifest merge conflict
+
+  - script: |
+      rm -f gradlew
+      rm -rf gradle/wrapper
+      mkdir -p gradle/wrapper
+      curl -fsSL https://raw.githubusercontent.com/gradle/gradle/v8.6.0/gradlew -o gradlew
+      chmod +x gradlew
+      curl -fsSL https://raw.githubusercontent.com/gradle/gradle/v8.6.0/gradle/wrapper/gradle-wrapper.jar -o gradle/wrapper/gradle-wrapper.jar
+      python3 -c "
+      props = 'distributionBase=GRADLE_USER_HOME\n'
+      props += 'distributionPath=wrapper/dists\n'
+      props += 'distributionUrl=https\://services.gradle.org/distributions/gradle-8.11.1-bin.zip\n'
+      props += 'zipStoreBase=GRADLE_USER_HOME\n'
+      props += 'zipStorePath=wrapper/dists\n'
+      open('gradle/wrapper/gradle-wrapper.properties', 'w').write(props)
+      "
+    workingDirectory: '$(Build.SourcesDirectory)/examples/TypeScriptMessaging/android'
+    displayName: Create Gradle wrapper (TypeScriptMessaging)
+
+  - script: |
+      chmod +x gradlew
+      ./gradlew generateCodegenArtifactsFromSchema \
+        --no-configuration-cache \
+        -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=512m" \
+        -PreactNativeArchitectures=arm64-v8a 2>&1 | tail -20
+      echo "=== Codegen output ==="
+      find . -path "*/codegen/jni" -type d 2>/dev/null | head -20
+    workingDirectory: '$(Build.SourcesDirectory)/examples/TypeScriptMessaging/android'
+    displayName: Run React Native Codegen
+
+  - script: |
+      echo "=== Disk space before build ==="
+      df -h /
+      chmod +x gradlew
+      ./gradlew assembleRelease \
+        --build-cache \
+        --parallel \
+        --daemon \
+        --no-configuration-cache \
+        -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=512m" \
+        -Dorg.gradle.caching=true \
+        -Dorg.gradle.workers.max=2 \
+        -PreactNativeArchitectures=arm64-v8a
+    workingDirectory: '$(Build.SourcesDirectory)/examples/TypeScriptMessaging/android'
+    displayName: Build APK (TypeScriptMessaging)
+    timeoutInMinutes: 90
+
+  - script: find . -name "*.apk" 2>/dev/null || echo "No APK found"
+    workingDirectory: '$(Build.SourcesDirectory)/examples/TypeScriptMessaging/android'
+    displayName: Verify APK (TypeScriptMessaging)
+
+  - task: PublishBuildArtifacts@1
+    inputs:
+      PathtoPublish: '$(Build.SourcesDirectory)/examples/TypeScriptMessaging/android/app/build/outputs/apk'
+      ArtifactName: 'apk-typescriptmessaging'
+      publishLocation: 'Container'
+    displayName: Publish APK (TypeScriptMessaging)
