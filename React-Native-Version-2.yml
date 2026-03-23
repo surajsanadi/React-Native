@@ -25,7 +25,7 @@ stages:
     displayName: Build SampleApp APK
     timeoutInMinutes: 120
     pool:
-      name: React-Native
+      name: Project-azure
 
     steps:
 
@@ -155,7 +155,7 @@ stages:
     displayName: Build TypeScriptMessaging APK
     timeoutInMinutes: 120
     pool:
-      name: React-Native
+      name: Project-azure
 
     steps:
 
@@ -372,7 +372,7 @@ stages:
   displayName: Firebase Test Lab (SampleApp)
   dependsOn: BuildAPKs
   pool:
-    name: React-Native
+    name: Project-azure
 
   jobs:
   - job: FirebaseTestSampleApp
@@ -435,7 +435,7 @@ stages:
   displayName: Firebase Test Lab (TypeScriptMessaging)
   dependsOn: BuildAPKs
   pool:
-    name: React-Native
+    name: Project-azure
 
   jobs:
   - job: FirebaseTestTSM
@@ -499,7 +499,7 @@ stages:
     - TestSampleApp
     - TestTypeScriptMessaging
   pool:
-    name: React-Native
+    name: Project-azure
 
   jobs:
 
